@@ -66,8 +66,8 @@ def main():
         x = cur_x - prev_x if prev_x is not None else np.zeros(D)
         prev_x = cur_x
 
-        aprob = policy(Variable(torch.from_numpy(x).double()))
-        aprob = aprob.data[0]
+        x = Variable(torch.from_numpy(x).float()).unsqueeze(0)
+        aprob = policy(x).data[0][0]
         action = 2 if np.random.uniform() < aprob else 3
 
         xs.append(x)
