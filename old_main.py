@@ -6,7 +6,6 @@ from torch import Tensor
 # from torch import LongTensor
 from torch.autograd import Variable
 import torch.nn as nn
-from torch.distributions import Categorical
 
 
 class Policy(nn.Module):
@@ -50,6 +49,7 @@ def main():
     env = gym.make("Pong-v0")  # action: 2->up, 3->down
     obs = env.reset()
     prev_x = None
+    xs, dlogps, drs = [], [], []
     # running_reward = None
     reward_sum = 0
     episode_number = 0
@@ -59,7 +59,6 @@ def main():
     optimizer = optim.RMSprop(policy.parameters(), lr=1e-3)
 
     while True:
-        rewards = []
         if render:
             env.render()
 
@@ -68,15 +67,40 @@ def main():
         prev_x = cur_x
 
         x = Variable(torch.from_numpy(x).float()).unsqueeze(0)
-        probs = policy(x)
-        m = Categorical(probs)
-        action = m.sample()
-        action = 2 if action == 1 else 2
-        dlogps.append(m.log_prob(action))
+        aprob = policy(x).data[0][0]
+        action = 2 if np.random.uniform() < aprob else 3
+
+        xs.append(x)
+        y = 1 if action == 2 else 0
+        dlogps.append(y - aprob)
 
         obs, reward, done, _ = env.step(action)
         reward_sum += reward
-        rewards.append(reward)
+
+        drs.append(reward)
 
         if done:
             episode_number += 1
+
+            # epx = np.vstack(xs)
+            epdlogp = np.vstack(dlogps)
+            epr = np.vstack(drs)
+            xs, dlogps, drs = [], [], []
+
+            discounted_epr = discount_rewards(epr)
+            discounted_epr -= np.mean(discounted_epr)
+            discounted_epr /= np.std(discounted_epr)
+
+            epdlogp *= - discounted_epr
+
+            optimizer.zero_grad()
+
+            loss = torch.cat(- Tensor(epdlogp) * Tensor(discounted_epr)).sum()
+            loss.backward()
+
+            optimizer.step()
+            print('Reward: %f' % reward_sum)
+
+            reward_sum = 0
+            obs = env.reset()
+            prev_x = None
