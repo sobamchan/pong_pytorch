@@ -3,7 +3,6 @@ import gym
 import torch
 import torch.optim as optim
 from torch import Tensor
-# from torch import LongTensor
 from torch.autograd import Variable
 import torch.nn as nn
 from torch.distributions import Categorical
@@ -20,6 +19,9 @@ class Policy(nn.Module):
                 nn.Sigmoid(),
                 ]
         self.layers = nn.Sequential(*layers)
+
+        self.rewards = []
+        self.saved_log_probs = []
 
     def forward(self, x):
         return self.layers(x)
@@ -50,16 +52,16 @@ def main():
     env = gym.make("Pong-v0")  # action: 2->up, 3->down
     obs = env.reset()
     prev_x = None
-    # running_reward = None
     reward_sum = 0
-    episode_number = 0
     D = 80 * 80
+    gamma = 0.99
+    i_episode = 1
+    batch_size = 32
 
     policy = Policy()
     optimizer = optim.RMSprop(policy.parameters(), lr=1e-3)
 
     while True:
-        rewards = []
         if render:
             env.render()
 
@@ -71,12 +73,43 @@ def main():
         probs = policy(x)
         m = Categorical(probs)
         action = m.sample()
-        action = 2 if action == 1 else 2
-        dlogps.append(m.log_prob(action))
+        policy.saved_log_probs.append(m.log_prob(action))
+        action = 2 if action.data[0] == 1 else 2
 
         obs, reward, done, _ = env.step(action)
         reward_sum += reward
-        rewards.append(reward)
+        policy.rewards.append(reward)
 
         if done:
-            episode_number += 1
+            if i_episode % batch_size == 0:
+                R = 0
+                policy_loss = []
+                rewards = []
+                for r in policy.rewards:
+                    R = r + gamma * R
+                    rewards.insert(0, R)
+                rewards = Tensor(rewards)
+                rewards =\
+                    (rewards - rewards.mean())\
+                    / (rewards.std() + np.finfo(np.float32).eps)
+
+                for log_prob, reward in zip(policy.saved_log_probs, rewards):
+                    policy_loss.append(-log_prob * reward)
+
+                optimizer.zero_grad()
+                policy_loss = torch.cat(policy_loss).sum()
+                policy_loss.backward()
+                optimizer.step()
+
+                del policy.rewards[:]
+                del policy.saved_log_probs[:]
+
+            print('%dth episode reward sum: %d' % (i_episode, reward_sum))
+            obs = env.reset()
+            reward_sum = 0
+            prev_x = None
+            i_episode += 1
+
+
+if __name__ == '__main__':
+    main()
