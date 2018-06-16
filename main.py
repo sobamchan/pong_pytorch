@@ -15,7 +15,7 @@ class Policy(nn.Module):
         layers = [
                 nn.Linear(6400, 200),
                 nn.ReLU(),
-                nn.Linear(200, 1),
+                nn.Linear(200, 2),
                 nn.Sigmoid(),
                 ]
         self.layers = nn.Sequential(*layers)
@@ -74,7 +74,8 @@ def main():
         m = Categorical(probs)
         action = m.sample()
         policy.saved_log_probs.append(m.log_prob(action))
-        action = 2 if action.data[0] == 1 else 2
+        action = action.data[0]
+        action = action + 2
 
         obs, reward, done, _ = env.step(action)
         reward_sum += reward
@@ -109,6 +110,8 @@ def main():
             reward_sum = 0
             prev_x = None
             i_episode += 1
+        if reward != 0:
+            print('episode done, reward: %d' % reward)
 
 
 if __name__ == '__main__':
