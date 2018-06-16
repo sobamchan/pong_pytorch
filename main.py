@@ -56,7 +56,7 @@ def main():
     D = 80 * 80
     gamma = 0.99
     i_episode = 1
-    batch_size = 32
+    batch_size = 10
 
     policy = Policy()
     optimizer = optim.RMSprop(policy.parameters(), lr=1e-3)
