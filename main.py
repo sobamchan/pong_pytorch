@@ -1,58 +1,83 @@
-import numpy as np
+import argparse
+from itertools import count
+
 import gym
+import numpy as np
+
 import torch
-import torch.optim as optim
-from torch import Tensor
-from torch.autograd import Variable
 import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.autograd import Variable
 from torch.distributions import Categorical
+
+
+def get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--gamma', type=float, default=0.99)
+    parser.add_argument('--decay-rate', type=float, default=0.99)
+    parser.add_argument('--learning-rate', type=float, default=1e-3)
+    parser.add_argument('--batch-size', type=int, default=3)
+    parser.add_argument('-seed', type=int, default=0)
+    return parser.parse_args()
+
+
+def prepro(img):
+    img = img[35:195]  # Crop
+    img = img[::2, ::2, 0]  # Downsample by factor of 2
+    img[img == 144] = 0
+    img[img == 109] = 0
+    img[img != 0] = 1
+    return img.astype(np.float).ravel()
 
 
 class Policy(nn.Module):
 
     def __init__(self):
         super(Policy, self).__init__()
-        layers = [
-                nn.Linear(6400, 200),
-                nn.ReLU(),
-                nn.Linear(200, 3),
-                nn.Sigmoid(),
-                ]
-        self.layers = nn.Sequential(*layers)
+        self.li1 = nn.Linear(6400, 200)
+        self.li2 = nn.Linear(200, 3)
+
+        self.saved_log_probs = []
+        self.rewards = []
 
     def forward(self, x):
-        return self.layers(x)
+        x = F.relu(self.li1(x))
+        x = self.li2(x)
+        return F.softmax(x, dim=1)
 
 
 class Agent:
 
-    def __init__(self, policy, optimizer, params):
-        self.policy = policy
-        self.optimizer = optimizer
-        self.params = params
-        self.rewards = []
-        self.saved_log_probs = []
+    def __init__(self, args):
+        self.args = args
+
+        self.policy = Policy()
+        self.optimizer = optim.RMSprop(self.policy.parameters(),
+                                       lr=args.learning_rate,
+                                       weight_decay=args.decay_rate)
 
     def select_action(self, state):
-        probs = self.policy(state)
+        state = torch.from_numpy(state).float().unsqueeze(0)
+        probs = self.policy(Variable(state))
         m = Categorical(probs)
         action = m.sample()
-        self.saved_log_probs.append(m.log_prob(action))
-        return action.data[0] + 1
+        self.policy.saved_log_probs.append(m.log_prob(action))
+        return action.data[0]
 
-    def learn(self):
-        params = self.params
+    def finish_episode(self):
+        args = self.args
         R = 0
         policy_loss = []
         rewards = []
-        for r in self.rewards:
-            R = r + params['gamma'] * R
+        for r in self.policy.rewards[::-1]:
+            R = r + args.gamma * R
             rewards.insert(0, R)
-        rewards = Tensor(rewards)
+        rewards = torch.Tensor(rewards)
         rewards = (rewards - rewards.mean())\
             / (rewards.std() + np.finfo(np.float32).eps)
 
-        for log_prob, reward in zip(self.saved_log_probs, rewards):
+        for log_prob, reward in zip(self.policy.saved_log_probs, rewards):
             policy_loss.append(-log_prob * reward)
 
         self.optimizer.zero_grad()
@@ -60,73 +85,47 @@ class Agent:
         policy_loss.backward()
         self.optimizer.step()
 
-        del self.rewards[:]
-        del self.saved_log_probs[:]
-
-
-def prepro(img):
-    img = img[35:195]  # Crop
-    img = img[::2, ::2, 0]  # Downsample by factor of 2
-    img[img == 144] = 0  # Erase background
-    img[img == 109] = 0  # Erase background
-    img[img != 0] = 1  # Erase background
-    return img.astype(np.float).ravel()
+        del self.policy.rewards[:]
+        del self.policy.saved_log_probs[:]
 
 
 def main():
-    render = False
+    args = get_args()
+    env = gym.make('Pong-v0')
+    env.seed(args.seed)
+    torch.manual_seed(args.seed)
 
-    env = gym.make("Pong-v0")  # action: 2->up, 3->down
-    obs = env.reset()
-    prev_x = None
-    reward_sum = 0
-    D = 80 * 80
-    params = {
-            'gamma': 0.99,
-            'decay_rate': 0.99,
-            'batch_size': 3,
-            }
+    agent = Agent(args)
 
-    i_episode = 1
     running_reward = None
+    reward_sum = 0
+    for i_episode in count(1):
+        state = env.reset()
+        for t in range(10000):
+            state = prepro(state)
+            action = agent.select_action(state)
+            action = action + 1
+            state, reward, done, _ = env.step(action)
+            reward_sum += reward
 
-    policy = Policy()
-    optimizer = optim.RMSprop(policy.parameters(),
-                              lr=1e-3,
-                              weight_decay=params['decay_rate'])
-    agent = Agent(policy, optimizer, params)
+            agent.policy.rewards.append(reward)
 
-    while True:
-        if render:
-            env.render()
+            if done:
+                if running_reward is None:
+                    running_reward = reward_sum
+                else:
+                    running_reward = running_reward * 0.99 + reward_sum * 0.01
+                print('resetting env. reward: %d, mean reward: %f'
+                      % (reward_sum, running_reward))
+                reward_sum = 0
+                break
 
-        cur_x = prepro(obs)
-        x = cur_x - prev_x if prev_x is not None else np.zeros(D)
-        prev_x = cur_x
+            if reward != 0:
+                print('episode %d: game. reward: %f' % (i_episode, reward))
 
-        x = Variable(torch.from_numpy(x).float()).unsqueeze(0)
-        action = agent.select_action(x)
-
-        obs, reward, done, _ = env.step(action)
-        reward_sum += reward
-        agent.rewards.append(reward)
-
-        if done:
-            if i_episode % params['batch_size'] == 0:
-                agent.learn()
-
-            if running_reward is None:
-                running_reward = reward_sum
-            else:
-                running_reward = 0.01 * reward_sum + 0.99 * running_reward
-            print('%dth episode reward sum: %d, mean reward: %f'
-                  % (i_episode, reward_sum, running_reward))
-            obs = env.reset()
-            reward_sum = 0
-            prev_x = None
-            i_episode += 1
-        if reward != 0:
-            print('episode done, reward: %d' % reward)
+        if i_episode % args.batch_size == 0:
+            print('episode %d: updating network' % i_episode)
+            agent.finish_episode()
 
 
 if __name__ == '__main__':
