@@ -69,13 +69,14 @@ class Agent:
         m = Categorical(probs)
         action = m.sample()
         self.policy.saved_actions.append(SavedAction(m.log_prob(action),
-                                                       state_value))
+                                                     state_value))
         return action.data[0]
 
     def finish_episode(self):
         args = self.args
         R = 0
-        policy_loss = []
+        policy_losses = []
+        value_losses = []
         rewards = []
         saved_actions = self.policy.saved_actions
 
@@ -88,14 +89,14 @@ class Agent:
 
         for (log_prob, value), r in zip(saved_actions, rewards):
             reward = r - value.data[0]
-            policy_loss.append(-log_prob * reward)
-            value_losses.append(F.smooth_l1_loss(value, Variable(torch.Tensor[r])))
-        # for log_prob, reward in zip(self.policy.saved_actions, rewards):
-        #     policy_loss.append(-log_prob * reward)
+            policy_losses.append(-log_prob.data * reward)
+            value_losses.append(F.smooth_l1_loss(value,
+                                                 Variable(torch.Tensor([r]))))
 
         self.optimizer.zero_grad()
-        policy_loss = torch.cat(policy_loss).sum()
-        policy_loss.backward()
+        loss = torch.stack(policy_losses).sum()\
+            + torch.stack(value_losses).sum()
+        loss.backward()
         self.optimizer.step()
 
         del self.policy.rewards[:]
